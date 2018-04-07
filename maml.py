@@ -3,6 +3,7 @@ from __future__ import print_function
 import numpy as np
 import sys
 import tensorflow as tf
+import time
 try:
     import special_grads
 except KeyError as e:
@@ -59,7 +60,6 @@ class MAML:
             self.inputb = input_tensors['inputb']
             self.labela = input_tensors['labela']
             self.labelb = input_tensors['labelb']
-
         with tf.variable_scope('model', reuse=None) as training_scope:
             if 'weights' in dir(self):
                 training_scope.reuse_variables()

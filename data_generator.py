@@ -83,7 +83,7 @@ class DataGenerator(object):
         if train:
             folders = self.metatrain_character_folders
             # number of tasks, not number of meta-iterations. (divide by metabatch size to measure)
-            num_total_batches = 200000
+            num_total_batches = 2000
         else:
             folders = self.metaval_character_folders
             num_total_batches = 600
@@ -91,7 +91,7 @@ class DataGenerator(object):
         # make list of files
         print('Generating filenames')
         all_filenames = []
-        for _ in range(num_total_batches):
+        for i in range(num_total_batches):
             sampled_character_folders = random.sample(folders, self.num_classes)
             random.shuffle(sampled_character_folders)
             labels_and_images = get_images(sampled_character_folders, range(self.num_classes), nb_samples=self.num_samples_per_class, shuffle=False)
@@ -120,6 +120,7 @@ class DataGenerator(object):
         min_queue_examples = 256
         examples_per_batch = self.num_classes * self.num_samples_per_class
         batch_image_size = self.batch_size  * examples_per_batch
+        print('capacity is:', 256 + 3 * batch_image_size)
         print('Batching images')
         images = tf.train.batch(
                 [image],

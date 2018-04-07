@@ -28,11 +28,13 @@ import numpy as np
 import pickle
 import random
 import tensorflow as tf
-
 from data_generator import DataGenerator
 from maml import MAML
 from tensorflow.python.platform import flags
-
+import time
+import os
+from tensorflow.python.client import timeline
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 FLAGS = flags.FLAGS
 
 ## Dataset/method options
@@ -67,8 +69,9 @@ flags.DEFINE_bool('test_set', False, 'Set to true to test on the the test set, F
 flags.DEFINE_integer('train_update_batch_size', -1, 'number of examples used for gradient update during training (use if you want to test with a different number).')
 flags.DEFINE_float('train_update_lr', -1, 'value of inner gradient step step during training. (use if you want to test with a different value)') # 0.1 for omniglot
 
-def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
-    SUMMARY_INTERVAL = 100
+def train(model, saver, sess, exp_string, data_generator, resume_itr=0,
+        options=None, run_metadata=None):
+    SUMMARY_INTERVAL = 10
     SAVE_INTERVAL = 1000
     if FLAGS.datasource == 'sinusoid':
         PRINT_INTERVAL = 1000
@@ -86,6 +89,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
     multitask_weights, reg_weights = [], []
 
     for itr in range(resume_itr, FLAGS.pretrain_iterations + FLAGS.metatrain_iterations):
+        start_iter = time.clock()
         feed_dict = {}
         if 'generate' in dir(data_generator):
             batch_x, batch_y, amp, phase = data_generator.generate()
@@ -111,13 +115,24 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
             input_tensors.extend([model.summ_op, model.total_loss1, model.total_losses2[FLAGS.num_updates-1]])
             if model.classification:
                 input_tensors.extend([model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]])
-
-        result = sess.run(input_tensors, feed_dict)
+        start = time.clock()
+        result = sess.run(input_tensors, feed_dict, options=options,
+                run_metadata=run_metadata)
+        elapsed = (time.clock() - start)
+        print('elapsed time in a maml run is:', elapsed)
 
         if itr % SUMMARY_INTERVAL == 0:
             prelosses.append(result[-2])
             if FLAGS.log:
                 train_writer.add_summary(result[1], itr)
+                train_writer.add_run_metadata(run_metadata, 'step%03d' %itr)
+                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                if not os.path.exists('profile'):
+                    os.mkdir('profile')
+                else:
+                    with open('profile/timeline_maml_step_%d.json' %itr, 'w') as f:
+                        f.write(chrome_trace)
             postlosses.append(result[-1])
 
         if (itr!=0) and itr % PRINT_INTERVAL == 0:
@@ -154,9 +169,9 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
 
             result = sess.run(input_tensors, feed_dict)
             print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
-
+        print('Time an iter:', time.clock() - start_iter)
     saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
-
+    
 # calculated for omniglot
 NUM_TEST_POINTS = 600
 
@@ -226,7 +241,7 @@ def main():
                 test_num_updates = 10
         else:
             test_num_updates = 10
-
+    print 'test_num_updates is:', test_num_updates
     if FLAGS.train == False:
         orig_meta_batch_size = FLAGS.meta_batch_size
         # always use meta batch size of 1 when testing.
@@ -265,12 +280,12 @@ def main():
         if FLAGS.train: # only construct training model if needed
             random.seed(5)
             image_tensor, label_tensor = data_generator.make_data_tensor()
+            print('input tensor is:', image_tensor)
             inputa = tf.slice(image_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
             inputb = tf.slice(image_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
             labela = tf.slice(label_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
             labelb = tf.slice(label_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
             input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
-
         random.seed(6)
         image_tensor, label_tensor = data_generator.make_data_tensor(train=False)
         inputa = tf.slice(image_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
@@ -278,6 +293,7 @@ def main():
         labela = tf.slice(label_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
         labelb = tf.slice(label_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
         metaval_input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
+        print('metaval_input tensor is:', image_tensor)
     else:
         tf_data_load = False
         input_tensors = None
@@ -290,7 +306,6 @@ def main():
     model.summ_op = tf.summary.merge_all()
 
     saver = loader = tf.train.Saver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES), max_to_keep=10)
-
     sess = tf.InteractiveSession()
 
     if FLAGS.train == False:
@@ -325,8 +340,11 @@ def main():
     model_file = None
 
     tf.global_variables_initializer().run()
+    options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+    run_metadata = tf.RunMetadata()
+    # coord = tf.train.Coordinator()
+    # tf.train.start_queue_runners(sess, coord)
     tf.train.start_queue_runners()
-
     if FLAGS.resume or not FLAGS.train:
         model_file = tf.train.latest_checkpoint(FLAGS.logdir + '/' + exp_string)
         if FLAGS.test_iter > 0:
@@ -338,7 +356,8 @@ def main():
             saver.restore(sess, model_file)
 
     if FLAGS.train:
-        train(model, saver, sess, exp_string, data_generator, resume_itr)
+        train(model, saver, sess, exp_string, data_generator, resume_itr,
+                options, run_metadata)
     else:
         test(model, saver, sess, exp_string, data_generator, test_num_updates)
 
