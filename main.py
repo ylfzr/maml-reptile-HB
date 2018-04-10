@@ -51,6 +51,7 @@ flags.DEFINE_float('meta_lr', 0.001, 'the base learning rate of the generator')
 flags.DEFINE_integer('update_batch_size', 5, 'number of examples used for inner gradient update (K for K-shot learning).')
 flags.DEFINE_float('update_lr', 1e-3, 'step size alpha for inner gradient update.') # 0.1 for omniglot
 flags.DEFINE_integer('num_updates', 1, 'number of inner gradient updates during training.')
+flags.DEFINE_integer('inputa_shots', 5, 'number of different training examples in inner loop')
 
 ## Model options
 flags.DEFINE_string('norm', 'batch_norm', 'batch_norm, layer_norm, or None')
@@ -126,13 +127,13 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0,
             if FLAGS.log:
                 train_writer.add_summary(result[1], itr)
                 train_writer.add_run_metadata(run_metadata, 'step%03d' %itr)
-                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
-                chrome_trace = fetched_timeline.generate_chrome_trace_format()
-                if not os.path.exists('profile'):
-                    os.mkdir('profile')
-                else:
-                    with open('profile/timeline_maml_step_%d.json' %itr, 'w') as f:
-                        f.write(chrome_trace)
+                # fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                # chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                # if not os.path.exists('profile'):
+                #     os.mkdir('profile')
+                # else:
+                #     with open('profile/timeline_maml_step_%d.json' %itr, 'w') as f:
+                #         f.write(chrome_trace)
             postlosses.append(result[-1])
 
         if (itr!=0) and itr % PRINT_INTERVAL == 0:
@@ -257,11 +258,15 @@ def main():
         else:
             if FLAGS.datasource == 'miniimagenet': # TODO - use 15 val examples for imagenet?
                 if FLAGS.train:
-                    data_generator = DataGenerator(FLAGS.update_batch_size+15, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+                    # data_generator = DataGenerator(FLAGS.update_batch_size+15, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+                    data_generator = DataGenerator(FLAGS.inputa_shots + 15, FLAGS.meta_batch_size)
                 else:
                     data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
-            else:
-                data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+            elif FLAGS.datasource == 'omniglot':
+                if FLAGS.train:
+                    data_generator = DataGenerator(FLAGS.inputa_shots + 1, FLAGS.meta_batch_size)
+                else:
+                    data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
 
 
     dim_output = data_generator.dim_output
@@ -280,11 +285,13 @@ def main():
         if FLAGS.train: # only construct training model if needed
             random.seed(5)
             image_tensor, label_tensor = data_generator.make_data_tensor()
+            assert max(test_num_updates, FLAGS.num_updates) == FLAGS.inputa_shots, \
+                'Inputa shots does not match inner update numbers during training'
             print('input tensor is:', image_tensor)
-            inputa = tf.slice(image_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
-            inputb = tf.slice(image_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
-            labela = tf.slice(label_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
-            labelb = tf.slice(label_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
+            inputa = tf.slice(image_tensor, [0,0,0], [-1,num_classes*FLAGS.inputa_shots, -1])
+            inputb = tf.slice(image_tensor, [0,num_classes*FLAGS.inputa_shots, 0], [-1,-1,-1])
+            labela = tf.slice(label_tensor, [0,0,0], [-1,num_classes*FLAGS.inputa_shots, -1])
+            labelb = tf.slice(label_tensor, [0,num_classes*FLAGS.inputa_shots, 0], [-1,-1,-1])
             input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
         random.seed(6)
         image_tensor, label_tensor = data_generator.make_data_tensor(train=False)
@@ -317,7 +324,8 @@ def main():
     if FLAGS.train_update_lr == -1:
         FLAGS.train_update_lr = FLAGS.update_lr
 
-    exp_string = 'cls_'+str(FLAGS.num_classes)+'.mbs_'+str(FLAGS.meta_batch_size) + '.ubs_' + str(FLAGS.train_update_batch_size) + '.numstep' + str(FLAGS.num_updates) + '.updatelr' + str(FLAGS.train_update_lr)
+    exp_string = 'cls_'+str(FLAGS.num_classes)+'shotsa'+str(FLAGS.inputa_shots)+\
+                 '.mbs_'+str(FLAGS.meta_batch_size) + '.ubs_' + str(FLAGS.train_update_batch_size) + '.numstep' + str(FLAGS.num_updates) + '.updatelr' + str(FLAGS.train_update_lr)
 
     if FLAGS.num_filters != 64:
         exp_string += 'hidden' + str(FLAGS.num_filters)

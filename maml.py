@@ -24,6 +24,7 @@ class MAML:
         self.meta_lr = tf.placeholder_with_default(FLAGS.meta_lr, ())
         self.classification = False
         self.test_num_updates = test_num_updates
+        self.lambda_r = 1.0
         if FLAGS.datasource == 'sinusoid':
             self.dim_hidden = [40, 40]
             self.loss_func = mse
@@ -47,6 +48,7 @@ class MAML:
             self.img_size = int(np.sqrt(self.dim_input/self.channels))
         else:
             raise ValueError('Unrecognized data source.')
+
 
     def construct_model(self, input_tensors=None, prefix='metatrain_'):
         # a: training data for inner gradient, b: test data for meta gradient
@@ -78,18 +80,39 @@ class MAML:
 
             def task_metalearn(inp, reuse=True):
                 """ Perform gradient descent for one task in the meta-batch. """
-                inputa, inputb, labela, labelb = inp
-                task_outputbs, task_lossesb = [], []
+                inputa_all, inputb, labela_all, labelb = inp  # changed the name of input tensors
+                # ================================================================
+                # if FLAGS.train == True:
+                if 'train' in prefix:
+                    # add further spilt in inputa ==================
+                    # batch_num_a = tf.shape(inputa_all)[1] / num_updates  # slice along axis 0, as map_fn has already handled the 0 axis
+                    batch_num_a = num_updates
+                    print(inputa_all, 'The inputa shape') # (784,)
+                    inputa = tf.split(inputa_all, batch_num_a, 0)
+                    labela = tf.split(labela_all, batch_num_a, 0)
+                    # print('Inputa[0] shape', inputa[0])  TODO: Why this give an assertion error? seems all right
+                    # print(FLAGS.num_classes)
+                    # assert tf.shape(inputa[0])[0] == FLAGS.num_classes, 'split inputa error'
+                else:
+                    assert FLAGS.update_batch_size == 1, 'data cannot be tiled properly'
+                    inputa = [inputa_all for i in range(num_updates)]
+                    labela = [labela_all for i in range(num_updates)]
+                    print('shape of each batch in inputa', inputa[0])
+                    # assert tf.shape(inputa[0])[0] == FLAGS.num_classes, 'tile inputa error'
 
+
+                task_outputbs, task_lossesb = [], []
+                # reptile_grads = []   # =============================
                 if self.classification:
                     task_accuraciesb = []
 
-                task_outputa = self.forward(inputa, weights, reuse=reuse)  # only reuse on the first iter
-                task_lossa = self.loss_func(task_outputa, labela)
+                task_outputa = self.forward(inputa[0], weights, reuse=reuse)  # only reuse on the first iter
+                task_lossa = self.loss_func(task_outputa, labela[0])
 
                 grads = tf.gradients(task_lossa, list(weights.values()))
                 if FLAGS.stop_grad:
                     grads = [tf.stop_gradient(grad) for grad in grads]
+
                 gradients = dict(zip(weights.keys(), grads))
                 fast_weights = dict(zip(weights.keys(), [weights[key] - self.update_lr*gradients[key] for key in weights.keys()]))
                 output = self.forward(inputb, fast_weights, reuse=True)
@@ -97,7 +120,7 @@ class MAML:
                 task_lossesb.append(self.loss_func(output, labelb))
 
                 for j in range(num_updates - 1):
-                    loss = self.loss_func(self.forward(inputa, fast_weights, reuse=True), labela)
+                    loss = self.loss_func(self.forward(inputa[j + 1], fast_weights, reuse=True), labela[j + 1])
                     grads = tf.gradients(loss, list(fast_weights.values()))
                     if FLAGS.stop_grad:
                         grads = [tf.stop_gradient(grad) for grad in grads]
@@ -107,7 +130,8 @@ class MAML:
                     task_outputbs.append(output)
                     task_lossesb.append(self.loss_func(output, labelb))
 
-                task_output = [task_outputa, task_outputbs, task_lossa, task_lossesb]
+                reptile_grad_values = [fast_weights[key] - weights[key] for key in weights.keys()] # =================
+                task_output = [reptile_grad_values, task_outputa, task_outputbs, task_lossa, task_lossesb]  # task_lossa gives the loss before any updating
 
                 if self.classification:
                     task_accuracya = tf.contrib.metrics.accuracy(tf.argmax(tf.nn.softmax(task_outputa), 1), tf.argmax(labela, 1))
@@ -115,21 +139,29 @@ class MAML:
                         task_accuraciesb.append(tf.contrib.metrics.accuracy(tf.argmax(tf.nn.softmax(task_outputbs[j]), 1), tf.argmax(labelb, 1)))
                     task_output.extend([task_accuracya, task_accuraciesb])
 
-                return task_output
+                return tuple(task_output)
 
             if FLAGS.norm is not 'None':
                 # to initialize the batch norm vars, might want to combine this, and not run idx 0 twice.
                 unused = task_metalearn((self.inputa[0], self.inputb[0], self.labela[0], self.labelb[0]), False)
 
-            out_dtype = [tf.float32, [tf.float32]*num_updates, tf.float32, [tf.float32]*num_updates]
+            self.num_weights = len(self.weights.keys())  # 14 trainable variables but 10 weights when --conv=True
+            print('The number of weights', self.num_weights)
+            out_dtype = [[tf.float32]*self.num_weights, tf.float32, [tf.float32]*num_updates, tf.float32, [tf.float32]*num_updates]  # 47 when num_update = 10
             if self.classification:
                 out_dtype.extend([tf.float32, [tf.float32]*num_updates])
+            out_dtype = tuple(out_dtype)
+            # ==============================================
+            # structure of dtype:([]*10, tf.float32, []*10, tf.float32, []*10, tf.float32, []*10, tf.float32)
+            # structure of ouput:(should be the same, revisit the construction )
             result = tf.map_fn(task_metalearn, elems=(self.inputa, self.inputb, self.labela, self.labelb), dtype=out_dtype, parallel_iterations=FLAGS.meta_batch_size)
+            # each output of tf.map_fn is made to a tensor, not list
             if self.classification:
-                outputas, outputbs, lossesa, lossesb, accuraciesa, accuraciesb = result
+                reptile_grad_values, outputas, outputbs, lossesa, lossesb, accuraciesa, accuraciesb = result
             else:
-                outputas, outputbs, lossesa, lossesb  = result
-
+                reptile_grad_values, outputas, outputbs, lossesa, lossesb  = result
+            reptile_grad_values = [tf.reduce_mean(reptile_grad_value, axis=0) for reptile_grad_value in list(reptile_grad_values)] # ==============
+            reptile_grads = dict(zip(weights.keys(), reptile_grad_values))
         ## Performance & Optimization
         if 'train' in prefix:
             self.total_loss1 = total_loss1 = tf.reduce_sum(lossesa) / tf.to_float(FLAGS.meta_batch_size)
@@ -143,9 +175,23 @@ class MAML:
 
             if FLAGS.metatrain_iterations > 0:
                 optimizer = tf.train.AdamOptimizer(self.meta_lr)
-                self.gvs = gvs = optimizer.compute_gradients(self.total_losses2[FLAGS.num_updates-1])
-                if FLAGS.datasource == 'miniimagenet':
-                    gvs = [(tf.clip_by_value(grad, -10, 10), var) for grad, var in gvs]
+                self.gvs = gvs = optimizer.compute_gradients(self.total_losses2[FLAGS.num_updates-1])  # list of (gradient, variable pairs)
+                # if FLAGS.datasource == 'miniimagenet':
+                #     gvs = [(tf.clip_by_value(grad, -10, 10) + reptile_grad_values, var) for grad, var in gvs] # original codes
+                # ===========================================
+                maml_grad_mag = [tf.nn.l2_loss(grad) for (grad, var) in gvs]
+                reptile_grad_mag = [tf.nn.l2_loss(reptile_grads[var]) for var in reptile_grads.keys()]
+                maml_grad_mag = tf.Print(maml_grad_mag, [maml_grad_mag], 'magnitudes of maml grads')
+                reptile_grad_mag = tf.Print(reptile_grad_mag, [reptile_grad_mag], 'magnitudes reptile grads')
+
+                print('Name of reptile_grads:', reptile_grads.keys())
+                print('Name of gvs_variables:', [str(var.name)[6:-2] for grad, var in gvs])
+                # gvs = [(tf.clip_by_value(grad + self.lambda_r * reptile_grads[str(var.name)[6:-2]], -10, 10), var) for grad, var in gvs if \
+                #        str(var.name)[6:-2] in reptile_grads.keys()] # Add reptile step.
+                gvs = [(tf.clip_by_value(grad + self.lambda_r * reptile_grads[str(var.name)[6:-2]], -10, 10), var) if \
+                           str(var.name)[6:-2] in reptile_grads.keys() else (tf.clip_by_value(grad, 10, 10), var) for grad, var in gvs]  # Add reptile step
+
+                # gvs = tf.Print(gvs, [maml_grad_mag, reptile_grad_mag], message='magnitudes of maml and reptile grads')
                 self.metatrain_op = optimizer.apply_gradients(gvs)
         else:
             self.metaval_total_loss1 = total_loss1 = tf.reduce_sum(lossesa) / tf.to_float(FLAGS.meta_batch_size)
@@ -191,13 +237,13 @@ class MAML:
         k = 3
 
         weights['conv1'] = tf.get_variable('conv1', [k, k, self.channels, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden]))
+        weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b1')
         weights['conv2'] = tf.get_variable('conv2', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b2'] = tf.Variable(tf.zeros([self.dim_hidden]))
+        weights['b2'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b2')
         weights['conv3'] = tf.get_variable('conv3', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b3'] = tf.Variable(tf.zeros([self.dim_hidden]))
+        weights['b3'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b3')
         weights['conv4'] = tf.get_variable('conv4', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b4'] = tf.Variable(tf.zeros([self.dim_hidden]))
+        weights['b4'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b4')
         if FLAGS.datasource == 'miniimagenet':
             # assumes max pooling
             weights['w5'] = tf.get_variable('w5', [self.dim_hidden*5*5, self.dim_output], initializer=fc_initializer)
