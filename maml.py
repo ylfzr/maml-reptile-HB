@@ -24,7 +24,7 @@ class MAML:
         self.meta_lr = tf.placeholder_with_default(FLAGS.meta_lr, ())
         self.classification = False
         self.test_num_updates = test_num_updates
-        self.lambda_r = 1.0
+        self.lambda_r = 0.0
         if FLAGS.datasource == 'sinusoid':
             self.dim_hidden = [40, 40]
             self.loss_func = mse
@@ -93,11 +93,13 @@ class MAML:
                     # print('Inputa[0] shape', inputa[0])  TODO: Why this give an assertion error? seems all right
                     # print(FLAGS.num_classes)
                     # assert tf.shape(inputa[0])[0] == FLAGS.num_classes, 'split inputa error'
+                    print('Train model data set')
                 else:
                     assert FLAGS.update_batch_size == 1, 'data cannot be tiled properly'
                     inputa = [inputa_all for i in range(num_updates)]
                     labela = [labela_all for i in range(num_updates)]
                     print('shape of each batch in inputa', inputa[0])
+                    print('Val model data set')
                     # assert tf.shape(inputa[0])[0] == FLAGS.num_classes, 'tile inputa error'
 
 
@@ -120,7 +122,8 @@ class MAML:
                 task_lossesb.append(self.loss_func(output, labelb))
 
                 for j in range(num_updates - 1):
-                    loss = self.loss_func(self.forward(inputa[j + 1], fast_weights, reuse=True), labela[j + 1])
+                    loss = self.loss_func(self.forward(inputa[0], fast_weights,
+                        reuse=True), labela[0])
                     grads = tf.gradients(loss, list(fast_weights.values()))
                     if FLAGS.stop_grad:
                         grads = [tf.stop_gradient(grad) for grad in grads]
@@ -188,7 +191,8 @@ class MAML:
                 print('Name of gvs_variables:', [str(var.name)[6:-2] for grad, var in gvs])
                 # gvs = [(tf.clip_by_value(grad + self.lambda_r * reptile_grads[str(var.name)[6:-2]], -10, 10), var) for grad, var in gvs if \
                 #        str(var.name)[6:-2] in reptile_grads.keys()] # Add reptile step.
-                gvs = [(tf.clip_by_value(grad + self.lambda_r * reptile_grads[str(var.name)[6:-2]], -10, 10), var) if \
+                gvs = [(tf.clip_by_value(grad + self.lambda_r *
+                                         reptile_grads[str(var.name)[6:-2]] + 0 * (tf.add_n(maml_grad_mag) + tf.add_n(reptile_grad_mag)), -10, 10), var) if \
                            str(var.name)[6:-2] in reptile_grads.keys() else (tf.clip_by_value(grad, 10, 10), var) for grad, var in gvs]  # Add reptile step
 
                 # gvs = tf.Print(gvs, [maml_grad_mag, reptile_grad_mag], message='magnitudes of maml and reptile grads')
