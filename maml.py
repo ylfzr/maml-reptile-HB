@@ -122,8 +122,8 @@ class MAML:
                 task_lossesb.append(self.loss_func(output, labelb))
 
                 for j in range(num_updates - 1):
-                    loss = self.loss_func(self.forward(inputa[0], fast_weights,
-                        reuse=True), labela[0])
+                    loss = self.loss_func(self.forward(inputa[j + 1], fast_weights,
+                        reuse=True), labela[j + 1])
                     grads = tf.gradients(loss, list(fast_weights.values()))
                     if FLAGS.stop_grad:
                         grads = [tf.stop_gradient(grad) for grad in grads]
@@ -180,20 +180,16 @@ class MAML:
                 optimizer = tf.train.AdamOptimizer(self.meta_lr)
                 self.gvs = gvs = optimizer.compute_gradients(self.total_losses2[FLAGS.num_updates-1])  # list of (gradient, variable pairs)
                 # if FLAGS.datasource == 'miniimagenet':
-                #     gvs = [(tf.clip_by_value(grad, -10, 10) + reptile_grad_values, var) for grad, var in gvs] # original codes
+                # gvs = [(tf.clip_by_value(grad, -10, 10), var) for grad, var in gvs] # original codes
                 # ===========================================
-                maml_grad_mag = [tf.nn.l2_loss(grad) for (grad, var) in gvs]
-                reptile_grad_mag = [tf.nn.l2_loss(reptile_grads[var]) for var in reptile_grads.keys()]
-                maml_grad_mag = tf.Print(maml_grad_mag, [maml_grad_mag], 'magnitudes of maml grads')
-                reptile_grad_mag = tf.Print(reptile_grad_mag, [reptile_grad_mag], 'magnitudes reptile grads')
+                self.maml_grad_mag = [tf.nn.l2_loss(grad) for (grad, var) in gvs]
+                self.reptile_grad_mag = [tf.nn.l2_loss(reptile_grads[var]) for var in reptile_grads.keys()]
 
                 print('Name of reptile_grads:', reptile_grads.keys())
                 print('Name of gvs_variables:', [str(var.name)[6:-2] for grad, var in gvs])
                 # gvs = [(tf.clip_by_value(grad + self.lambda_r * reptile_grads[str(var.name)[6:-2]], -10, 10), var) for grad, var in gvs if \
                 #        str(var.name)[6:-2] in reptile_grads.keys()] # Add reptile step.
-                gvs = [(tf.clip_by_value(grad + self.lambda_r *
-                                         reptile_grads[str(var.name)[6:-2]] + 0 * (tf.add_n(maml_grad_mag) + tf.add_n(reptile_grad_mag)), -10, 10), var) if \
-                           str(var.name)[6:-2] in reptile_grads.keys() else (tf.clip_by_value(grad, 10, 10), var) for grad, var in gvs]  # Add reptile step
+                gvs = [(tf.clip_by_value(grad + self.lambda_r * reptile_grads[str(var.name)[6:-2]], -10, 10), var) if str(var.name)[6:-2] in reptile_grads.keys() else (tf.clip_by_value(grad, 10, 10), var) for grad, var in gvs]  # Add reptile step
 
                 # gvs = tf.Print(gvs, [maml_grad_mag, reptile_grad_mag], message='magnitudes of maml and reptile grads')
                 self.metatrain_op = optimizer.apply_gradients(gvs)
