@@ -90,7 +90,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0,
     multitask_weights, reg_weights = [], []
 
     for itr in range(resume_itr, FLAGS.pretrain_iterations + FLAGS.metatrain_iterations):
-        start_iter = time.clock()
+        # start_iter = time.clock()
         feed_dict = {}
         if 'generate' in dir(data_generator):
             batch_x, batch_y, amp, phase = data_generator.generate()
@@ -113,19 +113,21 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0,
             input_tensors = [model.metatrain_op]
 
         if (itr % SUMMARY_INTERVAL == 0 or itr % PRINT_INTERVAL == 0):
+            input_tensors.append(model.maml_grad_mag)
+            input_tensors.append(model.reptile_grad_mag)
             input_tensors.extend([model.summ_op, model.total_loss1, model.total_losses2[FLAGS.num_updates-1]])
             if model.classification:
                 input_tensors.extend([model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]])
-        start = time.clock()
+        # start = time.clock()
         result = sess.run(input_tensors, feed_dict, options=options,
                 run_metadata=run_metadata)
-        elapsed = (time.clock() - start)
-        print('elapsed time in a maml run is:', elapsed)
+        # elapsed = (time.clock() - start)
+        # print('elapsed time in a maml run is:', elapsed)
 
         if itr % SUMMARY_INTERVAL == 0:
             prelosses.append(result[-2])
             if FLAGS.log:
-                train_writer.add_summary(result[1], itr)
+                train_writer.add_summary(result[3], itr)
                 train_writer.add_run_metadata(run_metadata, 'step%03d' %itr)
                 # fetched_timeline = timeline.Timeline(run_metadata.step_stats)
                 # chrome_trace = fetched_timeline.generate_chrome_trace_format()
@@ -143,6 +145,8 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0,
                 print_str = 'Iteration ' + str(itr - FLAGS.pretrain_iterations)
             print_str += ': ' + str(np.mean(prelosses)) + ', ' + str(np.mean(postlosses))
             print(print_str)
+            print('maml_grad_mag:', result[1])
+            print('reptile_grad_mag:', result[2])
             prelosses, postlosses = [], []
 
         if (itr!=0) and itr % SAVE_INTERVAL == 0:
@@ -170,7 +174,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0,
 
             result = sess.run(input_tensors, feed_dict)
             print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
-        print('Time an iter:', time.clock() - start_iter)
+        # print('Time an iter:', time.clock() - start_iter)
     saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
     
 # calculated for omniglot
@@ -237,7 +241,7 @@ def main():
     else:
         if FLAGS.datasource == 'miniimagenet':
             if FLAGS.train == True:
-                test_num_updates = 1  # eval on at least one update during training
+                test_num_updates = 5  # eval on at least one update during training, we change this to 5 ==========================
             else:
                 test_num_updates = 10
         else:
@@ -285,6 +289,8 @@ def main():
         if FLAGS.train: # only construct training model if needed
             random.seed(5)
             image_tensor, label_tensor = data_generator.make_data_tensor()
+            print('num_updates:', max(test_num_updates, FLAGS.num_updates))
+            print('inputa_shots', FLAGS.inputa_shots)
             assert max(test_num_updates, FLAGS.num_updates) == FLAGS.inputa_shots, \
                 'Inputa shots does not match inner update numbers during training'
             print('input tensor is:', image_tensor)
