@@ -31,10 +31,11 @@ import tensorflow as tf
 from data_generator import DataGenerator
 from maml import MAML
 from tensorflow.python.platform import flags
+from tensorflow.python import debug as tfdbg
 import time
 import os
 from tensorflow.python.client import timeline
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["CUDA_VISIBLE_DEVICES"]="4"
 FLAGS = flags.FLAGS
 
 ## Dataset/method options
@@ -319,8 +320,8 @@ def main():
     model.summ_op = tf.summary.merge_all()
 
     saver = loader = tf.train.Saver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES), max_to_keep=10)
-    sess = tf.InteractiveSession()
-
+    sess = tf.Session()
+    # sess = tfdbg.LocalCLIDebugWrapperSession(sess)
     if FLAGS.train == False:
         # change to original meta batch size when loading model.
         FLAGS.meta_batch_size = orig_meta_batch_size
@@ -330,7 +331,7 @@ def main():
     if FLAGS.train_update_lr == -1:
         FLAGS.train_update_lr = FLAGS.update_lr
 
-    exp_string = 'cls_'+str(FLAGS.num_classes)+'shotsa'+str(FLAGS.inputa_shots)+\
+    exp_string = 'lambda_r' +str(model.lambda_r) +'cls_'+str(FLAGS.num_classes)+'shotsa'+str(FLAGS.inputa_shots)+\
                  '.mbs_'+str(FLAGS.meta_batch_size) + '.ubs_' + str(FLAGS.train_update_batch_size) + '.numstep' + str(FLAGS.num_updates) + '.updatelr' + str(FLAGS.train_update_lr)
 
     if FLAGS.num_filters != 64:
@@ -353,12 +354,12 @@ def main():
     resume_itr = 0
     model_file = None
 
-    tf.global_variables_initializer().run()
+    sess.run(tf.global_variables_initializer())
     options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
     run_metadata = tf.RunMetadata()
     # coord = tf.train.Coordinator()
     # tf.train.start_queue_runners(sess, coord)
-    tf.train.start_queue_runners()
+    tf.train.start_queue_runners(sess)
     if FLAGS.resume or not FLAGS.train:
         model_file = tf.train.latest_checkpoint(FLAGS.logdir + '/' + exp_string)
         if FLAGS.test_iter > 0:
