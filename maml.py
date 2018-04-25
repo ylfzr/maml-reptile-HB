@@ -84,6 +84,7 @@ class MAML:
             def task_metalearn(inp, reuse=True):
                 """ Perform gradient descent for one task in the meta-batch. """
                 inputa_all, inputb, labela_all, labelb = inp  # changed the name of input tensors
+                
                 # ================================================================
                 # if FLAGS.train == True:
                 if 'train' in prefix:
@@ -136,7 +137,7 @@ class MAML:
                 # print('fast_weights keys:', fast_weights.keys())
                 # print('weights keys:', weights.keys())
                 # print('===============================================')
-                reptile_grad_val_task = [(1. / FLAGS.update_lr) * fast_weights[key] - weights[key] for
+                reptile_grad_val_task = [(1. / FLAGS.update_lr) * (fast_weights[key] - weights[key]) for
                                          key in weights.keys()] # =================
                 # print('Check the variables:', reptile_grad_val_task)
                 task_output = [reptile_grad_val_task, loss_reduce_inner_loops, task_outputa, task_outputbs, task_lossa, task_lossesb]  # task_lossa gives the loss before any updating
@@ -197,7 +198,7 @@ class MAML:
                 #                          reptile_grads[str(var.name)[6:-2]],
                 #                          -10, 10), var) if str(var.name)[6:-2]
                 #         in reptile_grads.keys() else (tf.clip_by_value(grad, -10, 10), var) for grad, var in gvs]  # Add reptile step
-                gvs = [(reptile_grads[str(var.name)[6:-2]], var) \
+                gvs = [(-1. * reptile_grads[str(var.name)[6:-2]], var) \
                     if str(var.name)[6:-2] in reptile_grads.keys() else (tf.clip_by_value(grad, -10, 10), var) \
                     for grad, var in gvs]
                 # gvs = tf.Print(gvs, [maml_grad_mag, reptile_grad_mag], message='magnitudes of maml and reptile grads')
@@ -224,6 +225,9 @@ class MAML:
                 tf.summary.scalar(prefix+'Post-update accuracy, step ' + str(j+1), total_accuracies2[j])
         for j in range(num_updates - 1):
             tf.summary.scalar(prefix + 'loss-reduced-inner-step' + str(j + 1), self.loss_reduced_inner_loops[j])
+        for var in weights.keys():
+            tf.summary.histogram(str(var), weights[var])
+    
     ### Network construction functions (fc networks and conv networks)
     def construct_fc_weights(self):
         weights = {}
