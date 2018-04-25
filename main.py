@@ -35,7 +35,7 @@ from tensorflow.python import debug as tfdbg
 import time
 import os
 from tensorflow.python.client import timeline
-os.environ["CUDA_VISIBLE_DEVICES"]="4"
+os.environ["CUDA_VISIBLE_DEVICES"]="5"
 FLAGS = flags.FLAGS
 
 ## Dataset/method options
